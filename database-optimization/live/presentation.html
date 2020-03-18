@@ -1,0 +1,650 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+
+    <title>TABD - Database Optimization</title>
+    <link rel="stylesheet" href="./css/reveal.css" />
+    <link rel="stylesheet" href="./css/theme/black.css" id="theme" />
+    <link rel="stylesheet" href="./css/highlight/zenburn.css" />
+    <link rel="stylesheet" href="./css/print/paper.css" type="text/css" media="print" />
+
+  </head>
+  <body>
+    <div class="reveal">
+      <div class="slides"><section  data-markdown><script type="text/template">
+
+# TABD
+
+Database Optimization
+
+By a group of weebs ([@dreamski21](https://github.com/dreamski21), [@WanisRamdani](https://github.com/wanisramdani), [@YounesDjakour](https://github.com/younesdjakour), and [@OussamaChebbah](https://github.com/oussamachebbah))
+</script></section><section  data-markdown><script type="text/template">
+## Whats and Whys
+</script></section><section  data-markdown><script type="text/template">
+### What and Why This Content?
+
+![](images/screenshot-danganronpa.jpg)
+
+<aside class="notes"><ul>
+<li>A visual novel is a genre of video games, where you mainly interact with text and static images.</li>
+<li>We all are familiar with this type of content and it&#39;s more interesting</li>
+</ul>
+</aside></script></section><section  data-markdown><script type="text/template">
+### What and Why This Website / Database?
+
+![](images/vndb.org-list.jpg)
+
+<aside class="notes"><ul>
+<li>&quot;VNDB.org strives to be a comprehensive database for information about visual novels.&quot;</li>
+<li>VNDB releases their database backup monthly or bi-monthly</li>
+<li>The website is <em>open source,</em> it&#39;s an <em>open database,</em> and it contains <em>open content</em></li>
+<li>Big enough to see results of our optimizations</li>
+</ul>
+</aside></script></section><section  data-markdown><script type="text/template">
+Ace Attorney for example...
+
+![](images/screenshot-ace-attorney.jpg)
+</script></section><section  data-markdown><script type="text/template">
+Ace Attorney on VNDB
+
+![](images/vndb.org-ace-attorney.png)
+
+<aside class="notes"><ul>
+<li>as you can see; main info (title, desc, image) in addition to relations/sections like anime and releases</li>
+</ul>
+</aside></script></section><section  data-markdown><script type="text/template">
+It's huge, man...
+
+![](images/vndb-organ.png)
+
+<aside class="notes"><ul>
+<li>Lotta rows and relations, to see the result of optimization and its effects on joining</li>
+</ul>
+</aside></script></section><section  data-markdown><script type="text/template">
+Kidding. We'll just focus on a few tables~
+
+![](images/vndb-main-tables.png)
+</script></section><section  data-markdown><script type="text/template">
+### What and Why This 'SGBD'?
+
+![](images/postgresql-logo.svg)
+
+<aside class="notes"><ul>
+<li>It&#39;s open source, multi-platform</li>
+<li>It supports stuff we will be learning:<ul>
+<li>Indexation (the <em>btree</em> method specifically)</li>
+<li>Partitioning</li>
+<li>Triggers</li>
+<li>Views</li>
+<li>Materialized views</li>
+</ul>
+</li>
+<li>It has some useful features we will be using (we will get to them in a jiffy)</li>
+<li>But, to be honest, it just was the easiest to import the database to.</li>
+</ul>
+</aside></script></section><section  data-markdown><script type="text/template">
+## Preparations
+</script></section><section  data-markdown><script type="text/template">
+### Installing and Importing
+
+```
+# After downloading VNDB's database dumps (https://vndb.org/d14)
+
+# Install Postgres
+sudo apt install postgresql-11
+
+# Extract the tar.zst archive (see stackoverflow.com/a/45704163/)
+dreamski@despair:~$ sudo apt install zstd
+dreamski@despair:~$ mkdir vndb-extracted && cd vndb-extracted
+dreamski@despair:~$ tar -I zstd -xvf ../vndb-db-2019-11-26.tar.zst
+
+# Open Postgres, create a new database, and connect to it
+dreamski@despair:~$ sudo -u postgres psql
+CREATE DATABASE vndb
+\c vndb
+
+# Start importing
+\cd /home/dreamski/vndb-extracted/
+SET client_encoding TO 'UTF8';
+\i import.sql
+```
+</script></section><section  data-markdown><script type="text/template">
+### Config
+We disable all optimizations we don't care about... for now.
+
+```sql
+set enable_seqscan = on;
+
+set enable_indexscan = off;
+set enable_indexonlyscan = off;
+set enable_partition_pruning = off;
+set enable_partitionwise_join = off;
+set enable_partitionwise_aggregate = off;
+set enable_material = off;
+set constraint_exclusion = off;
+
+set enable_mergejoin = off;
+set enable_bitmapscan = off;
+set enable_gathermerge = off;
+set enable_hashagg = off;
+set enable_hashjoin = off;
+set enable_nestloop = off;
+set enable_parallel_append = off;
+set enable_parallel_hash = off;
+set enable_sort = off;
+set enable_tidscan = off;
+```
+
+<aside class="notes"><ul>
+<li><p>The imported database is already optimized, this is we disable optimizations</p>
+</li>
+<li><p>See:</p>
+<ul>
+<li><a href="http://www.postgresql.org/docs/11/runtime-config-query.html">www.postgresql.org/docs/11/runtime-config-query.html</a></li>
+</ul>
+</li>
+</ul>
+</aside></script></section><section  data-markdown><script type="text/template">
+We will be using `EXPLAIN ANALYZE <whatever>` to see actual execution times and what plan was used.
+
+**(Remember l'cours? :3)**
+
+<aside class="notes"><ul>
+<li>See <a href="http://www.postgresql.org/docs/11/using-explain.html">www.postgresql.org/docs/11/using-explain.html</a></li>
+</ul>
+</aside></script></section><section  data-markdown><script type="text/template">
+### Tables
+
+These are the normalized tables we will be using...
+
+```sql
+/* `\d` is the same as MySQL's `DESCRIBE` command */
+\d vn
+\d anime
+\d vn_anime
+```
+</script></section><section  data-markdown><script type="text/template">
+![](images/vndb-main-tables.png)
+
+<aside class="notes"><ul>
+<li><em>Draw attention to specific columns</em></li>
+</ul>
+</aside></script></section><section  data-markdown><script type="text/template">
+## Indexation
+</script></section><section  data-markdown><script type="text/template">
+How our database is used...
+
+```sql
+SELECT title FROM vn WHERE title = 'Joker';
+
+-- What type of anime does the 'Akira' vn have?
+SELECT v.title, a.type FROM anime a, vn v, vn_anime va
+  WHERE v.id = va.id AND a.id = va.aid AND v.title = 'Akira';
+```
+
+<aside class="notes"><p>...</p>
+</aside></script></section><section  data-markdown><script type="text/template">
+```sql
+-- First, we re-enable the indexation feature
+set enable_indexscan = on;
+set enable_indexonlyscan = on;
+```
+
+```sql
+-- Then, we create an index
+CREATE INDEX title_idx ON vn USING btree (title);
+```
+
+<aside class="notes"><ul>
+<li>The &#39;USING method&#39; part is optional.
+If not specified, the SGBD uses its default method, which is probably <em>btree</em> as it&#39;s the most efficient.</li>
+<li>Why choose the <code>title</code> column? Because that&#39;s what most of our query use in the <code>WHERE</code> clause;
+Users (and thus queries) often use titles to select (or search for) records...</li>
+</ul>
+</aside></script></section><section  data-markdown><script type="text/template">
+Let's test again...
+
+```sql
+SELECT title FROM vn WHERE title = 'Joker';
+
+-- What type of anime does the 'Akira' vn have?
+SELECT v.title, a.type FROM anime a, vn v, vn_anime va
+  WHERE v.id = va.id AND a.id = va.aid AND v.title = 'Akira';
+```
+</script></section><section  data-markdown><script type="text/template">
+```sql
+-- To delete the index
+DROP INDEX title_idx;
+```
+
+<aside class="notes"><ul>
+<li>An index is basically a table and can be treated similar to it by altering it, dropping it, etc.</li>
+</ul>
+</aside></script></section><section  data-markdown><script type="text/template">
+### Pros
+
+<aside class="notes"><ul>
+<li>Speeds up stuff~</li>
+</ul>
+</aside></script></section><section  data-markdown><script type="text/template">
+### Cons
+
+<aside class="notes"><ul>
+<li>Taking extra space</li>
+<li>Performance penalty when updating</li>
+<li>May harm performance if done poorly</li>
+<li>Indexation keys should be unique and don&#39;t change often</li>
+<li><em>Maybe talk about partial indexes</em></li>
+<li><em>Mention the extreme example of sqlite especially with partial indexes?</em></li>
+<li>TODO: Maybe add the extreme example of indexation in sqlite</li>
+</ul>
+</aside></script></section><section  data-markdown><script type="text/template">
+## Denormalization
+
+<aside class="notes"><p>Denormalization is the process of reintroducing data redundancy; it is an optimization technique used to speed up queries execution.</p>
+<h3 id="why">Why</h3>
+<p>The first step of database design is creating a normalized schema of the relations.
+However, the process of normalization only cares about grouping information in non-redundant relations, but it does not take performance into account.</p>
+<p>Also consider that we are working with a relational database (based on relational algebra) where new information is reduced/derived from the existing relations using joins, which is very expansive in computation time and resources...</p>
+<p>Denormalization <em>may</em> be used to re-introduce redundancy to improve the database&#39;s performance by providing alternatives to common join operations.</p>
+</aside></script></section><section  data-markdown><script type="text/template">
+### Before you denormalize, normalize and analyze
+
+<aside class="notes"><p>Before we decide to denormalize our database we must:</p>
+<ul>
+<li><p>Test the performance of our normalized database in a real (or realistic) environment</p>
+</li>
+<li><p>Get a good understanding of how our database is used and its data characteristics</p>
+</li>
+<li><p>Learn what operations are frequently used (e.g. reading or updating)</p>
+</li>
+<li><p>Ensure that the cost of denormalization vs the average execution time of denormalized queries must be less than performing joins on normalized tables.)</p>
+</li>
+</ul>
+</aside></script></section><section  data-markdown><script type="text/template">
+### Adding redundant columns
+
+In this method, only the redundant column which is frequently used in the joins
+is added to the main table. The other table stays as it is.
+</script></section><section  data-markdown><script type="text/template">
+### Adding precomputed columns
+
+Suppose that our analysis of the database and updated requirements showed that such operations occur a lot:
+
+```sql
+-- How many anime does the 'Akira' visual novel have?
+SELECT count(a.id) FROM anime a, vn v, vn_anime va
+  WHERE v.id = va.id AND va.aid = a.id AND v.title = 'Akira';
+```
+</script></section><section  data-markdown><script type="text/template">
+So we have opted to add a new column for the precomputed count of animes each vn has,
+because our that's the most important (and costly) operation our application will be doing...
+
+```sql
+ALTER TABLE vn ADD num_anime int default 0;
+
+-- Let's populate num_anime ('dvn' stands for 'denormalized vn')
+UPDATE vn dvn SET num_anime = (
+  SELECT count(a.id) FROM anime a, vn v, vn_anime va
+    WHERE v.id = dvn.id AND v.id = va.id AND va.aid = a.id
+);
+```
+
+```sql
+-- To normalize 'vn' again, we can simply delete the redundant column
+ALTER TABLE vn DROP IF EXISTS num_anime;
+```
+</script></section><section  data-markdown><script type="text/template">
+Testing with and without the newly added column
+
+```sql
+-- Testing with 'Fate/Stay Night' vn whose id is 11 (https://vndb.org/v11)
+EXPLAIN ANALYZE  
+SELECT v.title, count(a.id) FROM anime a, vn v, vn_anime va
+  WHERE v.id = va.id AND va.aid = a.id AND v.id = 11
+  GROUP BY v.title;
+```
+
+```sql
+EXPLAIN ANALYZE  
+SELECT v.title, v.num_anime FROM vn v WHERE v.id = 11;
+```
+</script></section><section  data-markdown><script type="text/template">
+### Creating new redundant tables
+
+<aside class="notes"><p>Creating new tables that contain completely redundant information.</p>
+<p>It is normally used for data analysis and statistics, it does not need to be consistent with the rest of the database at all times...
+Can be updated with cron jobs (<code>*/30 * * * * psql vndb -c &quot;DROP table ..; CREATE table ..; INSERT ..;&quot;</code>) or watched expressions (e.g. <code>\watch 180</code> re-executes the previous statement every 3 minutes)</p>
+</aside></script></section><section  data-markdown><script type="text/template">
+```sql
+EXPLAIN ANALYZE
+select v.title, p.name
+from vn v, releases_vn rv, releases r, releases_producers rp, producers p
+where v.id = rv.vid and rv.id = r.id and r.id = rp.pid and p.id = rp.id and
+rp.developer = true and v.id = 11;
+
+-- Time: 1718.664 ms (00:01.719)
+```
+</script></section><section  data-markdown><script type="text/template">
+```sql
+CREATE TABLE d_vn_developers (
+  vid int,
+  rid int,
+  did int,
+  dname varchar(200) not null,
+
+  foreign key (vid) references vn(id),
+  foreign key (rid) references releases(id),
+  foreign key (did) references producers(id)
+);
+```
+
+```sql
+insert into d_vn_developers(vid, rid, did, dname)
+select v.id, r.id, p.id, p.name
+from vn v, releases_vn rv, releases r, releases_producers rp, producers p
+where v.id = rv.vid and rv.id = r.id and r.id = rp.pid and p.id = rp.id and rp.developer = true;
+
+-- Time: 428195.763 ms (07:08.196)
+```
+</script></section><section  data-markdown><script type="text/template">
+```sql
+EXPLAIN ANALYZE
+select dname
+from d_vn_developers
+where vid = 11;
+
+-- Time: 4.913 ms
+```
+
+```sql
+EXPLAIN ANALYZE
+select v.title, d.dname
+from vn v, d_vn_developers d
+where v.id = d.vid and v.id = 11;
+
+-- Time: 100.660 ms
+```
+</script></section><section  data-markdown><script type="text/template">
+### Combining tables
+
+For example:
+- `COMIC(id, authorId, artistId, title, price, releaseDate)`
+- `PERSON(id, type, name, pseudonym)`
+
+Becomes `COMIC(id, authorName, artistName, authorPseudonym, artistPseudonym, price, title, releaseDate)`
+</script></section><section  data-markdown><script type="text/template">
+### Pros
+
+- Retrieving data is faster since we do fewer-to-no joins.
+
+- Depending on the denormalization method, the number of foreign keys and indexes get reduced. This helps lessen data manipulation time.
+</script></section><section  data-markdown><script type="text/template">
+### Cons
+
+- Speeds reading but at the cost of creating additional overhead for updating: You end up updating the same information in different places to ensure data consistency.
+
+- Occupies extra space for the redundant information.
+
+Also, failure to update the database "manually", makes it incoherent! But this can be fixed...
+</script></section><section  data-markdown><script type="text/template">
+### Imagine...
+
+What if we could automate updating denormalized columns or tables
+
+Think, events that affect rows and statements (before, after, instead of specific operations)
+
+These are called **triggers**...
+</script></section><section  data-markdown><script type="text/template">
+## Triggers
+
+<aside class="notes"><ul>
+<li>POINT OUT: We don&#39;t care about updates, only insert and delete events interest us; that&#39;s why we attach triggers on them.</li>
+<li>MENTION: Triggers are very important that&#39;s why we will be explaining them in some detail</li>
+</ul>
+</aside></script></section><section  data-markdown><script type="text/template">
+```sql
+CREATE FUNCTION inc_num_anime() RETURNS trigger AS
+  '
+  BEGIN
+    /* vn.num_anime++ */
+    UPDATE vn SET num_anime = (select v.num_anime + 1 from vn v where v.id = NEW.id);
+    RETURN NULL;
+  END;
+  '
+  LANGUAGE 'plpgsql';
+
+CREATE TRIGGER anime_addition
+  AFTER INSERT ON vn_anime
+  FOR EACH ROW
+  EXECUTE FUNCTION inc_num_anime();
+```
+</script></section><section  data-markdown><script type="text/template">
+```sql
+CREATE FUNCTION dec_num_anime() RETURNS trigger AS
+  '
+  BEGIN
+    /* vn.num_anime-- */
+    UPDATE vn SET num_anime = (select v.num_anime - 1 from vn v where v.id = OLD.id);
+    RETURN NULL;
+  END;
+  '
+  LANGUAGE 'plpgsql';
+
+CREATE TRIGGER anime_deletion
+  AFTER DELETE ON vn_anime
+  FOR EACH ROW
+  EXECUTE FUNCTION dec_num_anime();
+```
+
+<aside class="notes"><p>See:</p>
+<ul>
+<li><p>IBM&#39;s Knowledgebase on <a href="ibm.com/support/knowledgecenter/SSEPEK_11.0.0/admin/src/tpc/db2z_denormalization.html">Denormalization</a></p>
+</li>
+<li><p><a href="https://www.postgresql.org/docs/11/trigger-definition.html">https://www.postgresql.org/docs/11/trigger-definition.html</a></p>
+</li>
+<li><p><a href="https://www.postgresql.org/docs/11/sql-createtrigger.html">https://www.postgresql.org/docs/11/sql-createtrigger.html</a></p>
+</li>
+<li><p><a href="https://www.postgresql.org/docs/11/sql-createfunction.html">https://www.postgresql.org/docs/11/sql-createfunction.html</a></p>
+</li>
+</ul>
+<blockquote>
+<p>&quot;The return value of a row-level trigger fired AFTER or a statement-level trigger fired BEFORE or AFTER is always ignored; it might as well be null. However, any of these types of triggers might still abort the entire operation by raising an error.&quot;
+-- <a href="https://www.postgresql.org/docs/11/plpgsql-trigger.html">https://www.postgresql.org/docs/11/plpgsql-trigger.html</a></p>
+</blockquote>
+<blockquote>
+<p>Row-level BEFORE triggers fire immediately before a particular row is operated on,
+while row-level AFTER triggers fire at the end of the statement (but before any statement-level
+AFTER triggers).
+-- <a href="https://www.postgresql.org/docs/11/trigger-definition.html">https://www.postgresql.org/docs/11/trigger-definition.html</a></p>
+</blockquote>
+</aside></script></section><section  data-markdown><script type="text/template">
+Still, we ca do better...
+</script></section><section  data-markdown><script type="text/template">
+## Partitioning
+
+<aside class="notes"><p>See:</p>
+<ul>
+<li><a href="https://www.postgresql.org/docs/11/ddl-partitioning.html">https://www.postgresql.org/docs/11/ddl-partitioning.html</a></li>
+<li><strong>CREATE TABLE</strong> PARTITION BY, PARTITION OF, INHERITS, LIKE <a href="https://www.postgresql.org/docs/11/sql-createtable.html">https://www.postgresql.org/docs/11/sql-createtable.html</a></li>
+</ul>
+</aside></script></section><section  data-markdown><script type="text/template">
+### Horiz.
+
+<aside class="notes"><ul>
+<li><p>TODO: Maybe partition &#39;vn&#39; (by length - range) or of &#39;anime&#39; by (by year - range?) or of anime by type (list)</p>
+</li>
+<li><p>Plan</p>
+<ul>
+<li><p>Part 1:</p>
+<ol>
+<li>Show manual partitioning using CREATE TABLE &#39;Y&#39; like &#39;X&#39; and adding CHECKs</li>
+<li>Use simple queries with <code>UNION ALL</code></li>
+<li><code>set constraint_exclusion = partition;</code>
+Mention that with a view and union all, it&#39;s better to set it as <code>partition</code> and not <code>on</code> do this because.</li>
+<li>Test again.</li>
+<li>Retry with a view. &quot;Because we will be doing that a lot, let&#39;s make things easier and create a view&quot;</li>
+<li>Test again. Better, huh?</li>
+</ol>
+</li>
+<li><p>Part 2:</p>
+<ul>
+<li><code>CREATE TRIGGER INSTEAD OF UPDATE ON anime_view ...</code></li>
+<li>Inserting to parent table, we use triggers to redirect inserts to appropriate partitions</li>
+<li>Updates and deletions from parent table, can be done but we won&#39;t be addressing them because they&#39;re too complicated and we shouldn&#39;t be dealing with them in the first place: Partition your tables with stable columns (like dates, for historical data)</li>
+</ul>
+</li>
+<li><p>Part 3:<br>Since we are trying to abstract as used to do in &#39;POO&#39;, we could use inheritence to implement partitioning but this is bad for several reasons.
+Check caveats on the &#39;ddl-inherit&#39; page.</p>
+</li>
+<li><p>Part 4:<br>But actually, Postgres has a built-in support for partitioning:</p>
+<ol>
+<li>Explain syntax</li>
+<li>Explain benefits (automates everything and removes most of the )</li>
+</ol>
+</li>
+</ul>
+</li>
+<li><p>See:</p>
+<ul>
+<li><a href="https://www.postgresql.org/docs/11/queries-union.html">https://www.postgresql.org/docs/11/queries-union.html</a></li>
+<li><a href="https://www.postgresql.org/docs/11/ddl-inherit.html">https://www.postgresql.org/docs/11/ddl-inherit.html</a></li>
+</ul>
+</li>
+</ul>
+</aside></script></section><section  data-markdown><script type="text/template">
+### Verti.
+
+Let's take the example of MediaWiki (as in, Wikipedia)
+
+![](images/MediaWiki_1.28.0_database_schema.svg)
+
+<aside class="notes"><ul>
+<li>To have smaller row sizes</li>
+<li>Maybe use EXPLAIN ANALYZE to show that row sizes (and costs) go down!</li>
+</ul>
+</aside></script></section><section  data-markdown><script type="text/template">
+### Pros
+
+<aside class="notes"><ul>
+<li>We can drop full partitions with a single action.</li>
+</ul>
+<p>See:</p>
+<ul>
+<li><p>Microsoft docs - <a href="https://docs.microsoft.com/en-us/azure/architecture/best-practices/data-partitioning">Horizontal, vertical, and functional data partitioning</a></p>
+</li>
+<li><p>Microsoft docs - <a href="https://docs.microsoft.com/en-us/sql/relational-databases/partitions/partitioned-tables-and-indexes?view=sql-server-ver15">Partitioned Tables and Indexes</a></p>
+</li>
+<li><p>Oracles docs - <a href="https://docs.oracle.com/cd/B28359_01/server.111/b32024/partition.htm">Partitioning Concepts</a></p>
+</li>
+<li><p>Parallel Plans <a href="https://www.postgresql.org/docs/11/parallel-plans.html">https://www.postgresql.org/docs/11/parallel-plans.html</a></p>
+</li>
+<li><p>JOIN, NATURAL JOIN: <a href="https://www.postgresql.org/docs/11/queries-table-expressions.html#QUERIES-FROM">https://www.postgresql.org/docs/11/queries-table-expressions.html#QUERIES-FROM</a></p>
+</li>
+</ul>
+</aside></script></section><section  data-markdown><script type="text/template">
+### Cons
+
+It exposes implementation details.. but this can be fixed...
+</script></section><section  data-markdown><script type="text/template">
+## Vues
+
+Think, ***abstract interfaces*** but for tables
+
+<aside class="notes"><ul>
+<li>TODO: Already mentioned in <strong>## Partitioning</strong>, move or reword it, although it fixes/follows Paritioning&#39;s cons</li>
+<li><a href="https://www.postgresql.org/docs/11/sql-createview.html">https://www.postgresql.org/docs/11/sql-createview.html</a></li>
+</ul>
+</aside></script></section><section  data-markdown><script type="text/template">
+But even better... Let's go *materialistic* >.<
+</script></section><section  data-markdown><script type="text/template">
+### Materialized Views
+
+Think, ***caching***...
+
+<aside class="notes"><ul>
+<li><p>Plan:</p>
+<ol>
+<li>Talk about creating a table THEN inserting into it</li>
+<li>Talk about creating a table AND inserting into it at the same time</li>
+<li>Say that a materialized view is basically a 2. that remembers it&#39;s init query and can be simply refreshed</li>
+</ol>
+</li>
+<li><p>Mention: Not all SGBDs support it. For example, MySQL doesn&#39;t support them natively [TODO: fact check this].</p>
+</li>
+</ul>
+<p>See:</p>
+<ul>
+<li><a href="https://www.postgresql.org/docs/11/sql-createtableas.html">https://www.postgresql.org/docs/11/sql-createtableas.html</a></li>
+<li><a href="https://www.postgresql.org/docs/11/sql-creatematerializedview.html">https://www.postgresql.org/docs/11/sql-creatematerializedview.html</a></li>
+<li><a href="https://www.postgresql.org/docs/11/sql-refreshmaterializedview.html">https://www.postgresql.org/docs/11/sql-refreshmaterializedview.html</a></li>
+<li>Materialized View (Postgres): <a href="https://stackoverflow.com/questions/29437650/how-can-i-ensure-that-a-materialized-view-is-always-up-to-date">https://stackoverflow.com/questions/29437650/how-can-i-ensure-that-a-materialized-view-is-always-up-to-date</a></li>
+</ul>
+</aside></script></section><section  data-markdown><script type="text/template">
+## Clustering
+
+...
+</script></section><section  data-markdown><script type="text/template">
+## Credits
+Credits, Disclaimer & Programs Used
+
+- [VNDB.org](https://vndb.org) and its contributors
+
+- [reveal-md](https://github.com/webpro/reveal-md)
+
+- [DbVisualizer](https://www.dbvis.com/)
+
+- _**Disclaimer: Screen captures of Danganronpa and Ace Attorney are used for educational and illustrative purposes under fair-use**_
+</script></section></div>
+    </div>
+
+    <script src="./js/reveal.js"></script>
+
+    <script>
+      function extend() {
+        var target = {};
+        for (var i = 0; i < arguments.length; i++) {
+          var source = arguments[i];
+          for (var key in source) {
+            if (source.hasOwnProperty(key)) {
+              target[key] = source[key];
+            }
+          }
+        }
+        return target;
+      }
+
+      // Optional libraries used to extend on reveal.js
+      var deps = [
+        { src: './plugin/markdown/marked.js', condition: function() { return !!document.querySelector('[data-markdown]'); } },
+        { src: './plugin/markdown/markdown.js', condition: function() { return !!document.querySelector('[data-markdown]'); } },
+        { src: './plugin/highlight/highlight.js', async: true, callback: function() { hljs.initHighlightingOnLoad(); } },
+        { src: './plugin/zoom-js/zoom.js', async: true },
+        { src: './plugin/notes/notes.js', async: true },
+        { src: './plugin/math/math.js', async: true }
+      ];
+
+      // default options to init reveal.js
+      var defaultOptions = {
+        controls: true,
+        progress: true,
+        history: true,
+        center: true,
+        transition: 'default', // none/fade/slide/convex/concave/zoom
+        dependencies: deps
+      };
+
+      // options from URL query string
+      var queryOptions = Reveal.getQueryHash() || {};
+
+      var options = extend(defaultOptions, {}, queryOptions);
+    </script>
+
+
+    <script>
+      Reveal.initialize(options);
+    </script>
+  </body>
+</html>
