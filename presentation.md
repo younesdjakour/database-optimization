@@ -6,7 +6,7 @@ title: TABD - Database Optimization
 
 Database Optimization
 
-By a group of weebs ([@dreamski21](https://github.com/dreamski21), [@WanisRamdani](https://github.com/wanisramdani), [@YounesDjakour](https://github.com/younesdjakour), and [@OussamaChebbah](https://github.com/oussamachebbah))
+By a group of weebs ([@DjalilHebal](https://github.com/djalilhebal), [@WanisRamdani](https://github.com/wanisramdani), [@YounesDjakour](https://github.com/younesdjakour), and [@OussamaChebbah](https://github.com/oussamachebbah))
 
 ---
 
